@@ -113,9 +113,7 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
         return
     }
 
-    # Only write to git repos
     if (-not $cwd) { return }
-    if (-not (Test-Path (Join-Path $cwd '.git'))) { return }
 
     $logPath = Join-Path $cwd 'SESSION_LOG.md'
     $isNew   = -not (Test-Path $logPath)
