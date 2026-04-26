@@ -4,6 +4,7 @@ Read SESSION_LOG.md in the current working directory.
 Parse it and present a concise "where we left off" briefing:
 - Most recent session header: date, branch, session ID
 - Last 5 progress bullet points across all sessions
+- Last 5 commits across all sessions
 - Last 10 files touched across all sessions
 - Any compaction events in the most recent session
 
