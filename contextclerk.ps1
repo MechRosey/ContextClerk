@@ -7,7 +7,7 @@
 
 param(
     [switch]$Force,
-    [int]$ThrottleLimit = 20
+    [int]$ThrottleLimit = 4
 )
 
 $StateFile    = Join-Path $env:USERPROFILE '.claude\contextclerk-state.json'
@@ -144,6 +144,23 @@ $resetLogs = [System.Collections.Generic.HashSet[string]]::new()
 
 if (-not (Test-Path $ProjectsRoot)) { exit 0 }
 
+# Derive our own project directory and delete sdk-cli agent files left there each run
+$selfProjectHash = $PSScriptRoot -replace ':', '-' -replace '\\', '-'
+$selfProjectDir  = Join-Path $ProjectsRoot $selfProjectHash
+if (Test-Path $selfProjectDir) {
+    $cntCleaned = 0
+    Get-ChildItem $selfProjectDir -Filter '*.jsonl' | Where-Object { $_.Length -lt 100kb } | ForEach-Object {
+        $entrypoint = $null
+        foreach ($line in (Get-Content $_.FullName -Encoding UTF8 -TotalCount 10)) {
+            $obj = $null
+            try { $obj = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+            if ($obj -and $obj.entrypoint) { $entrypoint = $obj.entrypoint; break }
+        }
+        if ($entrypoint -eq 'sdk-cli') { Remove-Item $_.FullName -Force; $cntCleaned++ }
+    }
+    if ($cntCleaned -gt 0) { Write-Output "  Cleaned $cntCleaned sdk-cli files from self project dir" }
+}
+
 $stateAge = if (Test-Path $StateFile) { (Get-Item $StateFile).LastWriteTime } else { [datetime]::MinValue }
 $phaseStart = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -165,6 +182,8 @@ $cntTotal = $candidateFiles.Count
 $candidateFiles | ForEach-Object {
 
     $jsonlPath = $_.FullName
+
+    if ($_.Length -lt 10kb) { return }
 
     if ($Force -and $_.LastWriteTime -lt (Get-Date).AddDays(-90)) { return }
 
@@ -357,8 +376,8 @@ foreach ($item in $workItems) {
 # Project: $cwd
 #
 # Quick reference for Claude:
-#   Last 10 files touched : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Select-Object -Last 10
-#   Last 10 commits       : (Select-String "^\s{2}-\s" (Select-String "Commits" .\SESSION_LOG.md -A 20).Line) | Select-Object -Last 10
+#   Last 10 files touched : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Where-Object { $_ -match "\\" } | Select-Object -Last 10
+#   Last 10 commits       : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Where-Object { $_ -notmatch "\\" } | Select-Object -Last 10
 #   Latest progress notes : (Select-String "^- " .\SESSION_LOG.md).Line | Select-Object -Last 10
 #   Compaction points     : Select-String "^\- \d\d:\d\d .* tokens" .\SESSION_LOG.md
 #   Work on a branch      : Select-String "\[branch: dev\]" .\SESSION_LOG.md -A 20
