@@ -4,7 +4,9 @@ Paste the block below into Claude Code.
 
 ---
 
-Set up ContextClerk from the repo at **[PASTE REPO PATH HERE, e.g. C:\Git\Github\ContextClerk]**.
+Set up ContextClerk. Clone the repo if you haven't already:
+  git clone git@github.com:MechRosey/ContextClerk.git
+Then tell me the local path where it was cloned.
 
 ContextClerk is a Claude Code session logger. It runs every 5 minutes via Windows Task
 Scheduler, reads Claude session transcripts, uses the claude CLI to write structured
