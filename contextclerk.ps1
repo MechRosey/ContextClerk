@@ -46,8 +46,8 @@ function Parse-Timestamp([string]$ts) {
     return $dt
 }
 
-# Extracts readable user and assistant text from a set of JSONL lines.
-# Skips short acks; truncates long messages. Returns null if nothing substantial.
+# Extracts readable conversation text and git commit messages from a set of JSONL lines.
+# User messages included if > 3 chars; agent decides significance.
 function Get-ConversationText([string[]]$lines) {
     $parts = [System.Collections.Generic.List[string]]::new()
     foreach ($line in $lines) {
@@ -59,12 +59,12 @@ function Get-ConversationText([string[]]$lines) {
             $content = $obj.message.content
             $text    = $null
             if ($content -is [string]) {
-                $text = $content
+                $text = $content.Trim()
             } elseif ($content -is [array]) {
-                $block = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
-                if ($block) { $text = $block.text }
+                $tb = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
+                if ($tb) { $text = $tb.text.Trim() }
             }
-            if ($text -and $text.Length -gt 80) {
+            if ($text -and $text.Length -gt 3) {
                 $parts.Add("User: $($text.Substring(0, [math]::Min(300, $text.Length)))")
             }
         }
@@ -72,9 +72,19 @@ function Get-ConversationText([string[]]$lines) {
         if ($obj.type -eq 'assistant') {
             $content = $obj.message.content
             if ($content -is [array]) {
-                $block = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
-                if ($block -and $block.text.Length -gt 20) {
-                    $parts.Add("Claude: $($block.text.Substring(0, [math]::Min(200, $block.text.Length)))")
+                # First text block
+                $tb = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
+                if ($tb -and $tb.text.Length -gt 20) {
+                    $parts.Add("Claude: $($tb.text.Substring(0, [math]::Min(200, $tb.text.Length)))")
+                }
+                # Git commit messages
+                foreach ($cb in $content) {
+                    if ($cb.type -eq 'tool_use' -and $cb.name -eq 'Bash' -and $cb.input.command -match 'git\s+commit') {
+                        $cmd = $cb.input.command
+                        if ($cmd -match '-m\s+"([^"]{10,})"') {
+                            $parts.Add("Committed: $($Matches[1].Trim())")
+                        }
+                    }
                 }
             }
         }
