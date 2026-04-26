@@ -15,13 +15,16 @@ persistent context across sessions.
 
 Run these steps in order, confirming each before proceeding:
 
-1. Run install.ps1 from the repo root. This registers the Windows Task Scheduler task
+1. Run contextclerk.ps1 -Force from the repo root. This does an initial backfill of
+   SESSION_LOG.md for all existing Claude Code projects and may take a few minutes.
+
+2. Run install.ps1 from the repo root. This registers the Windows Task Scheduler task
    'ContextClerk' to run contextclerk.ps1 every 5 minutes.
 
-2. Copy skills\contextclerk.md from the repo to $env:USERPROFILE\.claude\skills\contextclerk.md
+3. Copy skills\contextclerk.md from the repo to $env:USERPROFILE\.claude\skills\contextclerk.md
    This installs the /contextclerk skill, available in all future Claude Code sessions.
 
-3. Add the following to $env:USERPROFILE\.claude\CLAUDE.md:
+4. Add the following to $env:USERPROFILE\.claude\CLAUDE.md:
 
    ## ContextClerk
    At the start of each session, if SESSION_LOG.md exists in the project root, read it
