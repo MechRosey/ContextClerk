@@ -5,8 +5,6 @@
 # Designed to run via Windows Task Scheduler every 5 minutes.
 # Zero dependencies. No AI calls. Read-only access to transcript files.
 
-param()
-
 $StateFile    = Join-Path $env:USERPROFILE '.claude\contextclerk-state.json'
 $ProjectsRoot = Join-Path $env:USERPROFILE '.claude\projects'
 $ToolRepo     = 'https://github.com/MechRosey/ContextClerk'
@@ -14,7 +12,10 @@ $ToolRepo     = 'https://github.com/MechRosey/ContextClerk'
 function Load-State {
     if (-not (Test-Path $StateFile)) { return @{} }
     $raw = Get-Content $StateFile -Raw -Encoding UTF8
-    $obj = $raw | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @{} }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { return @{} }
+    if ($null -eq $obj) { return @{} }
     $ht  = @{}
     $obj.PSObject.Properties | ForEach-Object { $ht[$_.Name] = [int]$_.Value.lastLine }
     return $ht
@@ -44,6 +45,8 @@ function Parse-Timestamp([string]$ts) {
 $state = Load-State
 $dirty = $false
 
+if (-not (Test-Path $ProjectsRoot)) { exit 0 }
+
 Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
     $_.FullName -notmatch '\\subagents\\'
 } | ForEach-Object {
@@ -71,7 +74,7 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
         if ($null -eq $obj) { continue }
 
         if ($obj.cwd       -and -not $cwd)       { $cwd       = $obj.cwd }
-        if ($obj.gitBranch)                       { $branch    = $obj.gitBranch }
+        if ($obj.gitBranch)                       { $branch    = $obj.gitBranch } # last value wins; want current branch at end of session
         if ($obj.sessionId -and -not $sessionId)  { $sessionId = $obj.sessionId }
         if ($obj.timestamp -and -not $firstTs)    { $firstTs   = $obj.timestamp }
 
@@ -79,7 +82,8 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
         $subtype = $obj.subtype
 
         if ($type -eq 'system' -and $subtype -eq 'away_summary' -and $obj.content) {
-            $summaries += [PSCustomObject]@{ ts = $obj.timestamp; content = $obj.content }
+            $text = $obj.content -replace '\s*\(disable recaps in /config\)\s*$', ''
+            $summaries += [PSCustomObject]@{ ts = $obj.timestamp; content = $text }
         }
 
         if ($type -eq 'system' -and $subtype -eq 'compact_boundary' -and $obj.compactMetadata) {
@@ -96,10 +100,14 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
             $content = $obj.message.content
             if ($content -is [array]) {
                 foreach ($block in $content) {
-                    if ($block.type -eq 'tool_use' -and
-                        ($block.name -eq 'Write' -or $block.name -eq 'Edit') -and
-                        $block.input.file_path) {
-                        [void]$filesSet.Add($block.input.file_path)
+                    if ($block.type -eq 'tool_use') {
+                        if (($block.name -eq 'Write' -or $block.name -eq 'Edit' -or $block.name -eq 'MultiEdit') -and
+                            $block.input.file_path) {
+                            [void]$filesSet.Add($block.input.file_path)
+                        }
+                        if ($block.name -eq 'NotebookEdit' -and $block.input.notebook_path) {
+                            [void]$filesSet.Add($block.input.notebook_path)
+                        }
                     }
                 }
             }
@@ -113,7 +121,11 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
         return
     }
 
-    if (-not $cwd) { return }
+    if (-not $cwd -or -not (Test-Path $cwd -PathType Container)) {
+        $state[$jsonlPath] = $total
+        $dirty = $true
+        return
+    }
 
     $logPath = Join-Path $cwd 'SESSION_LOG.md'
     $isNew   = -not (Test-Path $logPath)
@@ -129,6 +141,7 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
 #   Latest progress notes : (Select-String "^- \d\d:\d\d" .\SESSION_LOG.md).Line | Select-Object -Last 5
 #   Compaction points     : Select-String "tokens\)" .\SESSION_LOG.md
 #   Work on a branch      : Select-String "\[branch: dev\]" .\SESSION_LOG.md -A 20
+
 "@
         Set-Content $logPath $header -Encoding UTF8
 
@@ -138,17 +151,18 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
             if ($existing -notmatch 'SESSION_LOG') {
                 Add-Content $gitignore "`nSESSION_LOG.md" -Encoding UTF8
             }
+        } else {
+            Set-Content $gitignore 'SESSION_LOG.md' -Encoding UTF8
         }
     }
 
     $dt       = Parse-Timestamp $firstTs
     $dateStr  = if ($dt) { $dt.ToString('yyyy-MM-dd HH:mm') } else { 'unknown' }
     $shortId  = if ($sessionId -and $sessionId.Length -ge 8) { $sessionId.Substring(0, 8) } else { '?' }
-    $branchStr = if ($branch) { $branch } else { 'unknown' }
+    $branchPart = if ($branch -and $branch -ne 'HEAD') { " [branch: $branch]" } else { '' }
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('')
-    [void]$sb.AppendLine("## $dateStr [branch: $branchStr] {session: $shortId}")
+    [void]$sb.AppendLine("## $dateStr$branchPart {session: $shortId}")
 
     if ($summaries.Count -gt 0) {
         [void]$sb.AppendLine('')
