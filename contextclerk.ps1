@@ -121,9 +121,10 @@ Focus on what changed or was decided, not on process or navigation.
 An empty response is perfectly valid. If nothing significant happened, respond with exactly: (nothing to log)
 "@
 
-    $result = ($prompt | & $script:claudeExe --print 2>$null) -join "`n"
+    $raw    = ($prompt | & $script:claudeExe --print --model haiku 2>$null)
+    $result = ($raw | Where-Object { $_.Trim() -ne '(nothing to log)' }) -join "`n"
     $result = $result.Trim()
-    if ($result -eq '(nothing to log)' -or [string]::IsNullOrWhiteSpace($result)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($result)) { return $null }
     return $result
 }
 
@@ -259,7 +260,7 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
 # Quick reference for Claude:
 #   Last 10 files touched : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Select-Object -Last 10
 #   Latest progress notes : (Select-String "^- " .\SESSION_LOG.md).Line | Select-Object -Last 10
-#   Compaction points     : Select-String "tokens\)" .\SESSION_LOG.md
+#   Compaction points     : Select-String "^\- \d\d:\d\d .* tokens" .\SESSION_LOG.md
 #   Work on a branch      : Select-String "\[branch: dev\]" .\SESSION_LOG.md -A 20
 
 "@
@@ -286,7 +287,6 @@ Get-ChildItem $ProjectsRoot -Recurse -Filter '*.jsonl' | Where-Object {
     $titlePart  = if ($sessionTitle) { " - $sessionTitle" } else { '' }
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('')
     [void]$sb.AppendLine("## $dateStr$branchPart {session: $shortId}$titlePart")
 
     if ($progressParts.Count -gt 0) {
