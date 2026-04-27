@@ -147,7 +147,7 @@ $convText
 Write 1-3 short bullet points summarising meaningful technical progress or decisions made.
 For each bullet: state what changed, why it changed, and the mechanism when non-obvious (e.g. "fixed banding - z-index was hiding CSS placeholder lines over the image").
 If the session ended mid-task or left something incomplete, add one final line starting with "Next:" describing what was interrupted or planned next.
-Rules: use plain "- item" bullets only. No markdown headers, bold, italics, or nested structure.
+Rules: use plain "- item" bullets only. No markdown headers, bold, italics, or nested structure. ASCII only - no em dashes, curly quotes, or any non-ASCII characters.
 An empty response is perfectly valid. If nothing significant happened, respond with exactly: (nothing to log)
 "@
 }
