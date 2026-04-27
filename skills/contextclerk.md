@@ -2,11 +2,10 @@ Read ContextClerk.md in the current working directory.
 
 **If the file exists:**
 Parse it and present a concise "where we left off" briefing:
-- Most recent session header: date, branch, session ID
+- Most recent session header: date and branch
 - Last 5 progress bullet points across all sessions
-- Last 5 commits across all sessions
+- Next: line from the most recent session, if present
 - Last 10 files touched across all sessions
-- Any compaction events in the most recent session
 
 Keep it tight. The goal is to orient immediately for resumed work, not a full audit.
 
