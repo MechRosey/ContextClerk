@@ -1,4 +1,4 @@
 # Machine-local state - never commit
 contextclerk-state.json
 
-SESSION_LOG.md
+ContextClerk.md

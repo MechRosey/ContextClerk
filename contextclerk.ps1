@@ -1,6 +1,6 @@
 # ContextClerk - https://github.com/MechRosey/ContextClerk
 # Monitors Claude Code session transcripts and appends structured summaries
-# to SESSION_LOG.md in each project repo.
+# to ContextClerk.md in each project repo.
 #
 # Designed to run via Windows Task Scheduler every 5 minutes.
 # Requires claude CLI for progress summarisation.
@@ -28,10 +28,25 @@ function Load-State {
     return $ht
 }
 
-function Save-State([hashtable]$st) {
+function Load-Sessions {
+    if (-not (Test-Path $StateFile)) { return @{} }
+    $raw = Get-Content $StateFile -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @{} }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { return @{} }
+    if ($null -eq $obj -or $null -eq $obj._sessions) { return @{} }
+    $ht = @{}
+    $obj._sessions.PSObject.Properties | ForEach-Object { $ht[$_.Name] = $_.Value }
+    return $ht
+}
+
+function Save-State([hashtable]$st, [hashtable]$sessions = $null) {
     $inner = @{}
-    foreach ($k in $st.Keys) { $inner[$k] = @{ lastLine = $st[$k] } }
-    $inner | ConvertTo-Json -Depth 2 | Set-Content $StateFile -Encoding UTF8
+    foreach ($k in $st.Keys) {
+        if ($k -ne '_sessions') { $inner[$k] = @{ lastLine = $st[$k] } }
+    }
+    if ($sessions -and $sessions.Count -gt 0) { $inner['_sessions'] = $sessions }
+    $inner | ConvertTo-Json -Depth 3 | Set-Content $StateFile -Encoding UTF8
 }
 
 function Format-Tokens([object]$n) {
@@ -117,7 +132,7 @@ function Build-Prompt([string]$convText, [string]$logPath) {
         $existingContext = (Get-Content $logPath -Encoding UTF8 | Select-Object -Last 25) -join "`n"
     }
     return @"
-You are writing a brief progress entry for SESSION_LOG.md, a Claude Code session development log.
+You are writing a brief progress entry for ContextClerk.md, a Claude Code session development log.
 
 Session log so far (for context only):
 ---
@@ -130,15 +145,77 @@ $convText
 ---
 
 Write 1-3 short bullet points summarising meaningful technical progress or decisions made.
-Focus on what changed or was decided, not on process or navigation.
+For each bullet: state what changed, why it changed, and the mechanism when non-obvious (e.g. "fixed banding - z-index was hiding CSS placeholder lines over the image").
+If the session ended mid-task or left something incomplete, add one final line starting with "Next:" describing what was interrupted or planned next.
 Rules: use plain "- item" bullets only. No markdown headers, bold, italics, or nested structure.
 An empty response is perfectly valid. If nothing significant happened, respond with exactly: (nothing to log)
 "@
 }
 
+# Merges new bullets and files into the last ## block of an existing log.
+# Returns $true on success, $false if no block found (caller should fall back to new block).
+function Update-LastBlock([string]$logPath, [string[]]$newBullets, [string[]]$newFiles) {
+    $lines = Get-Content $logPath -Encoding UTF8
+    if (-not $lines) { return $false }
+
+    $blockStart = -1
+    for ($i = $lines.Length - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -match '^## ') { $blockStart = $i; break }
+    }
+    if ($blockStart -lt 0) { return $false }
+
+    $existingBullets = [System.Collections.Generic.List[string]]::new()
+    $existingFiles   = [System.Collections.Generic.List[string]]::new()
+    $inProgress = $false
+    $inFiles    = $false
+    for ($i = $blockStart + 1; $i -lt $lines.Length; $i++) {
+        $l = $lines[$i]
+        if ($l -match '^### Progress')      { $inProgress = $true;  $inFiles = $false; continue }
+        if ($l -match '^### Files Modified') { $inFiles = $true;  $inProgress = $false; continue }
+        if ($l -match '^### ')              { $inProgress = $false; $inFiles = $false; continue }
+        if ($inProgress -and $l.Trim())     { $existingBullets.Add($l) }
+        if ($inFiles -and $l -match '^  - ') { $existingFiles.Add($l.Substring(4)) }
+    }
+
+    # Regular bullets accumulate; Next: line always moves to the end, latest wins
+    $nextLine      = $null
+    $mergedBullets = [System.Collections.Generic.List[string]]::new()
+    foreach ($b in $existingBullets) {
+        if ($b -match '^Next:') { $nextLine = $b } else { $mergedBullets.Add($b) }
+    }
+    foreach ($b in $newBullets) {
+        if ($b -match '^Next:') { $nextLine = $b }
+        elseif ($b.Trim() -and -not $mergedBullets.Contains($b)) { $mergedBullets.Add($b) }
+    }
+    if ($nextLine) { $mergedBullets.Add($nextLine) }
+
+    $mergedFiles = [System.Collections.Generic.HashSet[string]]([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($f in $existingFiles) { [void]$mergedFiles.Add($f.Trim()) }
+    foreach ($f in $newFiles)      { [void]$mergedFiles.Add($f.Trim()) }
+
+    $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine($lines[$blockStart])
+    if ($mergedBullets.Count -gt 0) {
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('### Progress')
+        foreach ($b in $mergedBullets) { [void]$sb.AppendLine($b) }
+    }
+    $sortedFiles = @($mergedFiles | Sort-Object)
+    if ($sortedFiles.Count -gt 0) {
+        [void]$sb.AppendLine('')
+        [void]$sb.AppendLine('### Files Modified')
+        foreach ($f in $sortedFiles) { [void]$sb.AppendLine("  - $f") }
+    }
+
+    $prefix = if ($blockStart -gt 0) { ($lines[0..($blockStart - 1)] -join "`r`n") + "`r`n" } else { '' }
+    Set-Content $logPath ($prefix + $sb.ToString()) -Encoding UTF8
+    return $true
+}
+
 # -----------------------------------------------------------------------
 
 $state     = Load-State
+$sessions  = Load-Sessions
 $dirty     = $false
 $resetLogs = [System.Collections.Generic.HashSet[string]]::new()
 
@@ -277,7 +354,7 @@ $candidateFiles | ForEach-Object {
     }
     $combinedConv = if ($convParts.Count -gt 0) { $convParts -join "`n---`n" } else { $null }
 
-    $logPath = if ($cwd) { Join-Path $cwd 'SESSION_LOG.md' } else { $null }
+    $logPath = if ($cwd) { Join-Path $cwd 'ContextClerk.md' } else { $null }
     $prompt  = if ($combinedConv -and $logPath) { Build-Prompt $combinedConv $logPath } else { $null }
 
     $workItems.Add([PSCustomObject]@{
@@ -348,7 +425,7 @@ if ($claudeExe -and (Test-Path $claudeExe)) {
     }
 }
 
-# Phase 4: write SESSION_LOG.md entries in file order (preserves per-project sequence)
+# Phase 4: write ContextClerk.md entries in file order (preserves per-project sequence)
 foreach ($item in $workItems) {
     $hasSummary = -not [string]::IsNullOrWhiteSpace($item.summary)
 
@@ -365,7 +442,11 @@ foreach ($item in $workItems) {
         continue
     }
 
-    $logPath    = Join-Path $cwd 'SESSION_LOG.md'
+    $logPath    = Join-Path $cwd 'ContextClerk.md'
+    $oldLogPath = Join-Path $cwd 'SESSION_LOG.md'
+    if ((Test-Path $oldLogPath) -and -not (Test-Path $logPath)) {
+        Rename-Item $oldLogPath $logPath
+    }
     $logExists  = Test-Path $logPath
     $firstWrite = -not $logExists -or ($Force -and -not $resetLogs.Contains($logPath))
 
@@ -376,11 +457,9 @@ foreach ($item in $workItems) {
 # Project: $cwd
 #
 # Quick reference for Claude:
-#   Last 10 files touched : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Where-Object { $_ -match "\\" } | Select-Object -Last 10
-#   Last 10 commits       : (Select-String "^\s{2}-\s" .\SESSION_LOG.md).Line | Where-Object { $_ -notmatch "\\" } | Select-Object -Last 10
-#   Latest progress notes : (Select-String "^- " .\SESSION_LOG.md).Line | Select-Object -Last 10
-#   Compaction points     : Select-String "^\- \d\d:\d\d .* tokens" .\SESSION_LOG.md
-#   Work on a branch      : Select-String "\[branch: dev\]" .\SESSION_LOG.md -A 20
+#   Last 10 files touched : (Select-String "^\s{2}-\s" .\ContextClerk.md).Line | Select-Object -Last 10
+#   Latest progress notes : (Select-String "^- " .\ContextClerk.md).Line | Select-Object -Last 10
+#   Work on a branch      : Select-String "\[branch: dev\]" .\ContextClerk.md -A 20
 
 "@
         Set-Content $logPath $header -Encoding UTF8
@@ -390,23 +469,55 @@ foreach ($item in $workItems) {
             $gitignore = Join-Path $cwd '.gitignore'
             if (Test-Path $gitignore) {
                 $existing = Get-Content $gitignore -Raw -Encoding UTF8
-                if ($existing -notmatch 'SESSION_LOG') {
-                    Add-Content $gitignore "`nSESSION_LOG.md" -Encoding UTF8
+                if ($existing -notmatch 'ContextClerk\.md') {
+                    Add-Content $gitignore "`nContextClerk.md" -Encoding UTF8
                 }
             } else {
-                Set-Content $gitignore 'SESSION_LOG.md' -Encoding UTF8
+                Set-Content $gitignore 'ContextClerk.md' -Encoding UTF8
             }
+        }
+    }
+
+    $cwdNorm = $cwd.TrimEnd('\') -replace '/', '\'
+    $projectFiles = @($item.filesSet | ForEach-Object {
+        $_ -replace '/', '\'
+    } | Where-Object {
+        $_.StartsWith($cwdNorm + '\', [System.StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object {
+        $_.Substring($cwdNorm.Length).TrimStart('\')
+    } | Sort-Object -Unique)
+
+    # Append to the existing session block unless a compaction occurred (which wipes context)
+    $isSameSession   = $sessions[$cwd] -and ($sessions[$cwd] -eq $item.sessionId)
+    $hasNewCompaction = $item.compactions.Count -gt 0
+    $shouldAppend    = $isSameSession -and -not $hasNewCompaction -and $logExists -and -not $firstWrite
+
+    if ($shouldAppend) {
+        $newBullets = if ($hasSummary) {
+            ($item.summary -split '\r?\n') | Where-Object { $_.Trim() }
+        } else { @() }
+
+        if ($newBullets.Count -gt 0 -or $projectFiles.Count -gt 0) {
+            $appended = Update-LastBlock $logPath $newBullets $projectFiles
+        } else {
+            $appended = $true
+        }
+
+        if ($appended) {
+            $sessions[$cwd]          = $item.sessionId
+            $state[$item.jsonlPath]  = $item.total
+            $dirty = $true
+            continue
         }
     }
 
     $dt         = Parse-Timestamp $item.firstTs
     $dateStr    = if ($dt) { $dt.ToString('yyyy-MM-dd HH:mm') } else { 'unknown' }
-    $shortId    = if ($item.sessionId -and $item.sessionId.Length -ge 8) { $item.sessionId.Substring(0, 8) } else { '?' }
     $branchPart = if ($item.branch -and $item.branch -ne 'HEAD') { " [branch: $($item.branch)]" } else { '' }
     $titlePart  = if ($item.sessionTitle) { " - $($item.sessionTitle)" } else { '' }
 
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine("## $dateStr$branchPart {session: $shortId}$titlePart")
+    [void]$sb.AppendLine("## $dateStr$branchPart$titlePart")
 
     if ($hasSummary) {
         [void]$sb.AppendLine('')
@@ -414,42 +525,27 @@ foreach ($item in $workItems) {
         [void]$sb.AppendLine($item.summary)
     }
 
-    if ($item.commitsList.Count -gt 0) {
+    if ($item.commitsList.Count -gt 0 -and -not $hasSummary) {
         [void]$sb.AppendLine('')
         [void]$sb.AppendLine('### Commits')
-        foreach ($c in $item.commitsList) {
+        foreach ($c in ($item.commitsList | Select-Object -Last 3)) {
             [void]$sb.AppendLine("  - $c")
         }
     }
 
-    if ($item.filesSet.Count -gt 0) {
+    if ($projectFiles.Count -gt 0) {
         [void]$sb.AppendLine('')
         [void]$sb.AppendLine('### Files Modified')
-        foreach ($f in ($item.filesSet | Sort-Object)) {
+        foreach ($f in $projectFiles) {
             [void]$sb.AppendLine("  - $f")
-        }
-    }
-
-    if ($item.compactions.Count -gt 0) {
-        [void]$sb.AppendLine('')
-        [void]$sb.AppendLine('### Compactions')
-        foreach ($c in $item.compactions) {
-            $t    = Parse-Timestamp $c.ts
-            $time = if ($t) { $t.ToString('HH:mm') } else { '??' }
-            $pre  = Format-Tokens $c.preTokens
-            if ($c.postTokens) {
-                $post = Format-Tokens $c.postTokens
-                [void]$sb.AppendLine("- $time $($c.trigger) ($pre -> $post tokens)")
-            } else {
-                [void]$sb.AppendLine("- $time $($c.trigger) ($pre tokens)")
-            }
         }
     }
 
     Add-Content $logPath $sb.ToString() -Encoding UTF8
 
+    $sessions[$cwd]         = $item.sessionId
     $state[$item.jsonlPath] = $item.total
     $dirty = $true
 }
 
-if ($dirty) { Save-State $state }
+if ($dirty) { Save-State $state $sessions }
