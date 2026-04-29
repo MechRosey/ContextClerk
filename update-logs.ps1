@@ -44,6 +44,12 @@ if ($found.Count -eq 0) {
 
 foreach ($file in $found) {
     $dir     = $file.DirectoryName
+
+    if ((Split-Path $dir -Leaf) -eq 'skills') {
+        Write-Host "SKIP (skills dir): $($file.FullName)"
+        continue
+    }
+
     $newPath = Join-Path $dir $NewName
 
     if (Test-Path $newPath) {
