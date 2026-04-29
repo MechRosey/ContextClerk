@@ -1,4 +1,4 @@
-Read ContextClerk.md in the current working directory.
+Read ContextLog.md in the current working directory.
 
 **If the file exists:**
 Parse it and present a concise "where we left off" briefing:
@@ -10,7 +10,7 @@ Parse it and present a concise "where we left off" briefing:
 Keep it tight. The goal is to orient immediately for resumed work, not a full audit.
 
 **If the file does not exist:**
-1. Report that no ContextClerk.md exists for this project yet.
+1. Report that no ContextLog.md exists for this project yet.
 2. Check whether the ContextClerk scheduled task is registered:
    `Get-ScheduledTask -TaskName 'ContextClerk' -ErrorAction SilentlyContinue`
 3. If found: the log will appear within 5 minutes of the next active Claude Code session. Nothing else to do.
