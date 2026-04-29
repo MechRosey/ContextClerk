@@ -465,14 +465,21 @@ foreach ($item in $workItems) {
         if ($Force) { [void]$resetLogs.Add($logPath) }
 
         if (-not $logExists) {
-            $gitignore = Join-Path $cwd '.gitignore'
-            if (Test-Path $gitignore) {
-                $existing = Get-Content $gitignore -Raw -Encoding UTF8
-                if ($existing -notmatch 'ContextLog\.md') {
-                    Add-Content $gitignore "`nContextLog.md" -Encoding UTF8
+            # Check if ContextLog.md is already excluded by any .gitignore up the hierarchy.
+            # git check-ignore exits 0 = ignored, 1 = not ignored, 128 = not a git repo.
+            $null = & git -C $cwd check-ignore -q $logPath
+            $alreadyIgnored = ($LASTEXITCODE -eq 0)
+
+            if (-not $alreadyIgnored) {
+                $gitignore = Join-Path $cwd '.gitignore'
+                if (Test-Path $gitignore) {
+                    $existing = Get-Content $gitignore -Raw -Encoding UTF8
+                    if ($existing -notmatch 'ContextLog\.md') {
+                        Add-Content $gitignore "`nContextLog.md" -Encoding UTF8
+                    }
+                } else {
+                    Set-Content $gitignore 'ContextLog.md' -Encoding UTF8
                 }
-            } else {
-                Set-Content $gitignore 'ContextLog.md' -Encoding UTF8
             }
         }
     }
