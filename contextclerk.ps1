@@ -77,6 +77,28 @@ function Get-ConversationText([string[]]$lines) {
             } elseif ($content -is [array]) {
                 $tb = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
                 if ($tb) { $text = $tb.text.Trim() }
+
+                foreach ($block in ($content | Where-Object { $_.type -eq 'tool_result' })) {
+                    $resultText = $null
+                    if ($block.content -is [string]) { $resultText = $block.content }
+                    elseif ($block.content -is [array]) {
+                        $rt = $block.content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
+                        if ($rt) { $resultText = $rt.text }
+                    }
+                    if (-not $resultText) { continue }
+                    foreach ($rline in ($resultText -split '\r?\n')) {
+                        $rline = $rline.Trim()
+                        if ($rline -match '(Passed|Failed)!.*Failed:\s+\d+.*Passed:\s+\d+') {
+                            $parts.Add("Tests: $($rline.Substring(0, [math]::Min(150, $rline.Length)))"); break
+                        }
+                        if ($rline -match '^Build (succeeded|FAILED)') {
+                            $parts.Add("Build: $rline"); break
+                        }
+                        if ($rline -match 'error [A-Z]+\d+:') {
+                            $parts.Add("Error: $($rline.Substring(0, [math]::Min(200, $rline.Length)))"); break
+                        }
+                    }
+                }
             }
             if ($text -and $text.Length -gt 3) {
                 $parts.Add("User: $($text.Substring(0, [math]::Min(300, $text.Length)))")
@@ -86,9 +108,25 @@ function Get-ConversationText([string[]]$lines) {
         if ($obj.type -eq 'assistant') {
             $content = $obj.message.content
             if ($content -is [array]) {
-                $tb = $content | Where-Object { $_.type -eq 'text' } | Select-Object -First 1
-                if ($tb -and $tb.text.Length -gt 20) {
-                    $parts.Add("Claude: $($tb.text.Substring(0, [math]::Min(200, $tb.text.Length)))")
+                $charBudget = 1000
+                $charUsed   = 0
+                foreach ($tb in ($content | Where-Object { $_.type -eq 'text' -and $_.text.Length -gt 20 })) {
+                    $avail    = $charBudget - $charUsed
+                    if ($avail -le 0) { break }
+                    $maxBlock = [math]::Min(500, $avail)
+                    if ($tb.text.Length -le $maxBlock) {
+                        $snippet = $tb.text
+                    } else {
+                        $tailLen = 150
+                        $headLen = $maxBlock - $tailLen - 5
+                        $snippet = if ($headLen -gt 0) {
+                            $tb.text.Substring(0, $headLen) + ' ... ' + $tb.text.Substring($tb.text.Length - $tailLen)
+                        } else {
+                            $tb.text.Substring(0, $maxBlock)
+                        }
+                    }
+                    $parts.Add("Claude: $snippet")
+                    $charUsed += $snippet.Length
                 }
                 foreach ($cb in $content) {
                     if ($cb.type -eq 'tool_use' -and $cb.name -eq 'Bash' -and $cb.input.command -match 'git\s+commit') {
@@ -146,6 +184,7 @@ $convText
 
 Write 1-3 short bullet points summarising meaningful technical progress or decisions made.
 For each bullet: state what changed, why it changed, and the mechanism when non-obvious (e.g. "fixed banding - z-index was hiding CSS placeholder lines over the image").
+Prefer insights and decisions that would not be obvious from reading the code or git diff. Skip routine confirmations such as "N tests passed" or "build succeeded" unless something unexpected occurred.
 If the session ended mid-task or left something incomplete, add one final line starting with "Next:" describing what was interrupted or planned next.
 Rules: use plain "- item" bullets only. No markdown headers, bold, italics, or nested structure. ASCII only - no em dashes, curly quotes, or any non-ASCII characters.
 An empty response is perfectly valid. If nothing significant happened, respond with exactly: (nothing to log)
