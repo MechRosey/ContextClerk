@@ -184,6 +184,7 @@ $convText
 
 Write 1-3 short bullet points summarising meaningful technical progress or decisions made.
 For each bullet: state what changed, why it changed, and the mechanism when non-obvious (e.g. "fixed banding - z-index was hiding CSS placeholder lines over the image").
+If Claude tried multiple failing approaches before finding the working solution (e.g. wrong path, missing tool, incorrect invocation), note the successful approach explicitly so it can be recalled without repeating the search (e.g. "msbuild found at X - not on PATH by default").
 Prefer insights and decisions that would not be obvious from reading the code or git diff. Skip routine confirmations such as "N tests passed" or "build succeeded" unless something unexpected occurred.
 If the session ended mid-task or left something incomplete, add one final line starting with "Next:" describing what was interrupted or planned next.
 Rules: use plain "- item" bullets only. No markdown headers, bold, italics, or nested structure. ASCII only - no em dashes, curly quotes, or any non-ASCII characters.
