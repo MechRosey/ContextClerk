@@ -100,7 +100,11 @@ function Get-ConversationText([string[]]$lines) {
                     }
                 }
             }
-            if ($text -and $text.Length -gt 3) {
+            # Skip compaction summaries and injected skill/system reminders
+            if ($text -and $text.Length -gt 3 `
+                    -and $text -notmatch '^This session is being continued' `
+                    -and $text -notmatch '^# ' `
+                    -and $text -notmatch '^<system-reminder>') {
                 $parts.Add("User: $($text.Substring(0, [math]::Min(300, $text.Length)))")
             }
         }
@@ -108,16 +112,17 @@ function Get-ConversationText([string[]]$lines) {
         if ($obj.type -eq 'assistant') {
             $content = $obj.message.content
             if ($content -is [array]) {
-                $charBudget = 1000
-                $charUsed   = 0
+                $charBudget  = 8000
+                $perBlockCap = [math]::Max(200, [int]($charBudget / 2))
+                $charUsed    = 0
                 foreach ($tb in ($content | Where-Object { $_.type -eq 'text' -and $_.text.Length -gt 20 })) {
                     $avail    = $charBudget - $charUsed
                     if ($avail -le 0) { break }
-                    $maxBlock = [math]::Min(500, $avail)
+                    $maxBlock = [math]::Min($perBlockCap, $avail)
                     if ($tb.text.Length -le $maxBlock) {
                         $snippet = $tb.text
                     } else {
-                        $tailLen = 150
+                        $tailLen = [math]::Min(500, [int]($maxBlock * 0.3))
                         $headLen = $maxBlock - $tailLen - 5
                         $snippet = if ($headLen -gt 0) {
                             $tb.text.Substring(0, $headLen) + ' ... ' + $tb.text.Substring($tb.text.Length - $tailLen)
