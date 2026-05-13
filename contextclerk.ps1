@@ -799,7 +799,7 @@ if ($needsWeekly -and $maintenance.lastWeekly) {
     try { $lastWeeklyDate = [datetime]::Parse($maintenance.lastWeekly) } catch {}
     $needsWeekly = -not $lastWeeklyDate -or $lastWeeklyDate.Date -lt $today.Date
 }
-$prevMonth    = $today.AddMonths(-1).ToString('yyyy-MM')
+$prevMonth    = $today.AddMonths(-2).ToString('yyyy-MM')
 $needsMonthly = $maintenance.lastMonthly -ne $prevMonth
 
 if ($needsWeekly -or $needsMonthly) {
