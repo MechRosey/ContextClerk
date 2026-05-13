@@ -24,7 +24,7 @@ function Load-State {
     try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { return @{} }
     if ($null -eq $obj) { return @{} }
     $ht  = @{}
-    $obj.PSObject.Properties | ForEach-Object { $ht[$_.Name] = [int]$_.Value.lastLine }
+    $obj.PSObject.Properties | Where-Object { $_.Name -notmatch '^_' } | ForEach-Object { $ht[$_.Name] = [int]$_.Value.lastLine }
     return $ht
 }
 
@@ -40,13 +40,29 @@ function Load-Sessions {
     return $ht
 }
 
-function Save-State([hashtable]$st, [hashtable]$sessions = $null) {
+function Save-State([hashtable]$st, [hashtable]$sessions = $null, [hashtable]$maintenance = $null) {
     $inner = @{}
     foreach ($k in $st.Keys) {
-        if ($k -ne '_sessions') { $inner[$k] = @{ lastLine = $st[$k] } }
+        if ($k -notmatch '^_') { $inner[$k] = @{ lastLine = $st[$k] } }
     }
     if ($sessions -and $sessions.Count -gt 0) { $inner['_sessions'] = $sessions }
+    if ($maintenance) {
+        if ($maintenance.lastWeekly)  { $inner['_lastWeeklyCleanup']  = $maintenance.lastWeekly }
+        if ($maintenance.lastMonthly) { $inner['_lastMonthlyArchive'] = $maintenance.lastMonthly }
+    }
     $inner | ConvertTo-Json -Depth 3 | Set-Content $StateFile -Encoding UTF8
+}
+
+function Load-Maintenance {
+    if (-not (Test-Path $StateFile)) { return @{} }
+    $raw = Get-Content $StateFile -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) { return @{} }
+    $obj = $null
+    try { $obj = $raw | ConvertFrom-Json -ErrorAction Stop } catch { return @{} }
+    $ht = @{}
+    if ($obj._lastWeeklyCleanup)  { $ht['lastWeekly']  = $obj._lastWeeklyCleanup }
+    if ($obj._lastMonthlyArchive) { $ht['lastMonthly'] = $obj._lastMonthlyArchive }
+    return $ht
 }
 
 function Format-Tokens([object]$n) {
@@ -258,11 +274,186 @@ function Update-LastBlock([string]$logPath, [string[]]$newBullets, [string[]]$ne
     return $true
 }
 
+# Parses a ContextLog.md into a structured object with Preamble and Blocks.
+# Blocks have: Header, Date, BodyLines, IsHeader, IsArchive.
+function Parse-LogBlocks([string[]]$lines) {
+    $preamble = [System.Collections.Generic.List[string]]::new()
+    $blocks   = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $current  = $null
+    foreach ($line in $lines) {
+        if ($line -match '^## ') {
+            if ($current) { $blocks.Add($current) }
+            $isHeader  = $line -match '^## \*ContextLog'
+            $isArchive = $line -match '^## Archive \['
+            $date = $null
+            if (-not $isHeader -and -not $isArchive -and $line -match '^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2})') {
+                try { $date = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm', $null) } catch {}
+            }
+            $current = [PSCustomObject]@{
+                Header    = $line
+                Date      = $date
+                BodyLines = [System.Collections.Generic.List[string]]::new()
+                IsHeader  = $isHeader
+                IsArchive = $isArchive
+            }
+        } elseif ($current) {
+            $current.BodyLines.Add($line)
+        } else {
+            $preamble.Add($line)
+        }
+    }
+    if ($current) { $blocks.Add($current) }
+    return [PSCustomObject]@{ Preamble = $preamble; Blocks = $blocks }
+}
+
+function Get-KnownCwds([hashtable]$sessions) {
+    return @($sessions.Keys | Where-Object { Test-Path $_ -PathType Container })
+}
+
+# Strips stale metadata (Files Modified, Commits, Next: lines) from entries older than 7 days.
+function Invoke-WeeklyCleanup([string[]]$cwds) {
+    $cutoff  = (Get-Date).AddDays(-7)
+    $cleaned = 0
+    foreach ($cwd in $cwds) {
+        $logPath = Join-Path $cwd 'ContextLog.md'
+        if (-not (Test-Path $logPath)) { continue }
+        $lines   = Get-Content $logPath -Encoding UTF8
+        $parsed  = Parse-LogBlocks $lines
+        $changed = $false
+        foreach ($block in $parsed.Blocks) {
+            if ($block.IsHeader -or $block.IsArchive -or -not $block.Date) { continue }
+            if ($block.Date -ge $cutoff) { continue }
+            $newBody = [System.Collections.Generic.List[string]]::new()
+            $inStrip = $false
+            foreach ($l in $block.BodyLines) {
+                if ($l -match '^### (Files Modified|Commits)') { $inStrip = $true; $changed = $true; continue }
+                if ($l -match '^### ') { $inStrip = $false }
+                if ($inStrip) { $changed = $true; continue }
+                if ($l -match '^\s*(?:-\s+)?Next:') { $changed = $true; continue }
+                $newBody.Add($l)
+            }
+            $block.BodyLines = $newBody
+        }
+        if ($changed) {
+            $sb = New-Object System.Text.StringBuilder
+            foreach ($l in $parsed.Preamble) { [void]$sb.AppendLine($l) }
+            foreach ($block in $parsed.Blocks) {
+                [void]$sb.AppendLine($block.Header)
+                foreach ($l in $block.BodyLines) { [void]$sb.AppendLine($l) }
+            }
+            Set-Content $logPath $sb.ToString().TrimEnd() -Encoding UTF8
+            $cleaned++
+        }
+    }
+    if ($cleaned -gt 0) { Write-Output "  Weekly cleanup     : $cleaned log(s) pruned" }
+}
+
+# Summarises last month's session blocks into a two-part archive entry (Arc + Insights).
+# Runs once per month; archive blocks are never re-processed.
+function Invoke-MonthlyArchive([string[]]$cwds, [string]$targetMonth) {
+    if (-not $claudeExe -or -not (Test-Path $claudeExe)) { return }
+
+    $archiveLabel  = [datetime]::ParseExact("$targetMonth-01", 'yyyy-MM-dd', $null).ToString('MMMM yyyy')
+    $archiveHeader = "## Archive [$archiveLabel]"
+    $archived      = 0
+
+    foreach ($cwd in $cwds) {
+        $logPath = Join-Path $cwd 'ContextLog.md'
+        if (-not (Test-Path $logPath)) { continue }
+
+        $parsed = Parse-LogBlocks (Get-Content $logPath -Encoding UTF8)
+
+        if ($parsed.Blocks | Where-Object { $_.Header -eq $archiveHeader }) { continue }
+
+        $targetIndices = [System.Collections.Generic.HashSet[int]]::new()
+        for ($i = 0; $i -lt $parsed.Blocks.Count; $i++) {
+            $b = $parsed.Blocks[$i]
+            if (-not $b.IsHeader -and -not $b.IsArchive -and $b.Date -and
+                $b.Date.ToString('yyyy-MM') -eq $targetMonth) {
+                [void]$targetIndices.Add($i)
+            }
+        }
+        if ($targetIndices.Count -eq 0) { continue }
+
+        $sessionParts = [System.Collections.Generic.List[string]]::new()
+        foreach ($i in ($targetIndices | Sort-Object)) {
+            $b    = $parsed.Blocks[$i]
+            $part = $b.Header
+            if ($b.BodyLines.Count -gt 0) { $part += "`n" + ($b.BodyLines -join "`n") }
+            $sessionParts.Add($part.TrimEnd())
+        }
+        $sessionText = $sessionParts -join "`n`n"
+
+        $prompt = @"
+You are writing a monthly archive entry for ContextLog.md, a Claude Code session development log.
+This archive entry permanently replaces the individual session entries for $archiveLabel.
+It will never be summarised again.
+
+The following session entries cover ${archiveLabel}:
+---
+$sessionText
+---
+
+### Arc
+The arc of this month's work: how understanding evolved, what failed and what unlocked progress, key decisions made and why.
+Loosely chronological. Focus on the project-specific narrative -- what was attempted, what broke, what was discovered.
+Every bullet must answer "what was non-obvious here?" -- if a bullet describes routine cleanup, documentation updates, or work with no decision or surprise, drop it.
+Preserve attribution accurately: if the source says the user caught or requested something, it was the agent that made the mistake, not the user.
+If the month had no significant decisions or surprises, write nothing here.
+
+### Insights
+Portable lessons from this month: non-obvious API, tool, platform, or language behaviours that would help on a different project with a similar problem.
+Not "we did X" -- "X is how this class of thing works."
+Before writing each Insights bullet, check whether the same mechanism already appears in Arc in any form -- if it does, omit it from Insights entirely.
+If nothing portable was learned, write nothing here.
+
+IMPORTANT: ASCII characters only throughout. Do not use em dashes (--), curly quotes, or any non-ASCII character. Use a plain hyphen or comma instead.
+
+Rules for both sections:
+- Plain "- item" bullets only
+- Do not pad thin sections -- an empty section is better than a vague bullet
+- If a section has no bullets, still output the header followed by a blank line
+
+Output exactly these two headers, each followed by bullets or a blank line:
+### Arc
+### Insights
+"@
+
+        $rawOutput = ($prompt | & $claudeExe --print --no-session-persistence --model haiku 2>$null) -join "`n"
+        $rawOutput = $rawOutput.Trim()
+        if ([string]::IsNullOrWhiteSpace($rawOutput)) { continue }
+
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($l in $parsed.Preamble) { [void]$sb.AppendLine($l) }
+
+        $firstInserted = $false
+        for ($i = 0; $i -lt $parsed.Blocks.Count; $i++) {
+            $block = $parsed.Blocks[$i]
+            if ($targetIndices.Contains($i)) {
+                if (-not $firstInserted) {
+                    [void]$sb.AppendLine($archiveHeader)
+                    [void]$sb.AppendLine('')
+                    foreach ($l in ($rawOutput -split '\r?\n')) { [void]$sb.AppendLine($l) }
+                    $firstInserted = $true
+                }
+            } else {
+                [void]$sb.AppendLine($block.Header)
+                foreach ($l in $block.BodyLines) { [void]$sb.AppendLine($l) }
+            }
+        }
+
+        Set-Content $logPath $sb.ToString().TrimEnd() -Encoding UTF8
+        $archived++
+        Write-Output "  Monthly archive    : archived $archiveLabel in $cwd"
+    }
+}
+
 # -----------------------------------------------------------------------
 
-$state     = Load-State
-$sessions  = Load-Sessions
-$dirty     = $false
+$state       = Load-State
+$sessions    = Load-Sessions
+$maintenance = Load-Maintenance
+$dirty       = $false
 $resetLogs = [System.Collections.Generic.HashSet[string]]::new()
 
 if (-not (Test-Path $ProjectsRoot)) { exit 0 }
@@ -600,4 +791,27 @@ foreach ($item in $workItems) {
     $dirty = $true
 }
 
-if ($dirty) { Save-State $state $sessions }
+# Phase 5: maintenance passes (weekly cleanup, monthly archive)
+$today        = Get-Date
+$needsWeekly  = $today.DayOfWeek -eq [DayOfWeek]::Monday
+if ($needsWeekly -and $maintenance.lastWeekly) {
+    $lastWeeklyDate = $null
+    try { $lastWeeklyDate = [datetime]::Parse($maintenance.lastWeekly) } catch {}
+    $needsWeekly = -not $lastWeeklyDate -or $lastWeeklyDate.Date -lt $today.Date
+}
+$prevMonth    = $today.AddMonths(-1).ToString('yyyy-MM')
+$needsMonthly = $maintenance.lastMonthly -ne $prevMonth
+
+if ($needsWeekly -or $needsMonthly) {
+    $knownCwds = Get-KnownCwds $sessions
+    if ($needsWeekly) {
+        Invoke-WeeklyCleanup $knownCwds
+        $maintenance['lastWeekly'] = $today.ToString('yyyy-MM-dd')
+    }
+    if ($needsMonthly) {
+        Invoke-MonthlyArchive $knownCwds $prevMonth
+        $maintenance['lastMonthly'] = $prevMonth
+    }
+}
+
+if ($dirty -or $needsWeekly -or $needsMonthly) { Save-State $state $sessions $maintenance }
