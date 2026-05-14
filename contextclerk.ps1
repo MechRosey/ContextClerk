@@ -631,7 +631,7 @@ if ($claudeExe -and (Test-Path $claudeExe)) {
 
     if ($toSummarise.Count -eq 1) {
         $item        = $toSummarise[0]
-        $raw         = ($item.prompt | & $claudeExe --print --model haiku 2>$null)
+        $raw         = ($item.prompt | & $claudeExe --print --no-session-persistence --model haiku 2>$null)
         $result      = ($raw | Where-Object { $_.Trim() -ne '(nothing to log)' }) -join "`n"
         $item.summary = ($result -split '\r?\n' | Where-Object { $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*\*\*' }) -join "`n"
         $item.summary = $item.summary.Trim()
