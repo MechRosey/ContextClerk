@@ -456,6 +456,12 @@ $maintenance = Load-Maintenance
 $dirty       = $false
 $resetLogs = [System.Collections.Generic.HashSet[string]]::new()
 
+# Prune stale worktree keys recorded before worktree cwds were remapped to project roots
+@($sessions.Keys) | Where-Object { $_ -match '\\\.claude\\worktrees\\' } | ForEach-Object {
+    $sessions.Remove($_)
+    $dirty = $true
+}
+
 if (-not (Test-Path $ProjectsRoot)) { exit 0 }
 
 # Derive our own project directory and delete sdk-cli agent files left there each run
@@ -581,6 +587,11 @@ $candidateFiles | ForEach-Object {
             }
         }
     }
+
+    # Sessions that entered an ephemeral worktree (EnterWorktree) record the worktree as cwd.
+    # Remap to the parent project root so the log entry survives worktree teardown and lands
+    # where the next session will read it.
+    if ($cwd -match '^(.*)\\\.claude\\worktrees\\') { $cwd = $Matches[1] }
 
     # Coalesce all segments into a single conversation text (one LLM call per file)
     $segments  = Split-AtCompactions $newLines
