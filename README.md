@@ -2,6 +2,9 @@
 
 Persistent session memory for Claude Code on Windows.
 
+> **On Linux?** See [README.linux.md](README.linux.md) for the bash port
+> (`contextclerk.sh` + `install.sh`, systemd user timer).
+
 ContextClerk runs every five minutes via Windows Task Scheduler. It reads Claude Code
 session transcripts, calls the Claude CLI to write a structured progress summary, and
 appends that summary to ContextLog.md in each project repo. At the start of your next
