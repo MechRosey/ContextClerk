@@ -6,7 +6,7 @@ PowerShell version (`contextclerk.ps1`) - it reads Claude Code session transcrip
 appends that summary to `ContextLog.md` in each project repo. At the start of your next
 session, Claude reads the log and picks up where you left off.
 
-The Windows files (`contextclerk.ps1`, `install.ps1`, `contextclerk.vbs`, `update-logs.ps1`)
+The Windows files (`contextclerk.ps1`, `install.ps1`, `update-logs.ps1`)
 are unchanged and remain the reference. The Linux port lives in:
 
 | File              | Role                                                        |
